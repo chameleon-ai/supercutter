@@ -24,6 +24,28 @@ class ScalingMethod(Enum):
     def __str__(self):
         return self.value
 
+def parsetime(timestamp: str) -> datetime.timedelta:
+    # Split the timestamp by the colon to separate hours, minutes, and seconds
+    parts = timestamp.split(':')
+    
+    # Initialize total seconds
+    total_seconds = 0.0
+    
+    if len(parts) == 3:  # Format: hours:minutes:seconds
+        hours, minutes, seconds = parts
+        total_seconds += int(hours) * 3600  # Convert hours to seconds
+        total_seconds += int(minutes) * 60   # Convert minutes to seconds
+        total_seconds += float(seconds)       # Add seconds
+    elif len(parts) == 2:  # Format: minutes:seconds
+        minutes, seconds = parts
+        total_seconds += int(minutes) * 60   # Convert minutes to seconds
+        total_seconds += float(seconds)       # Add seconds
+    else:  # Format: seconds (or seconds with milliseconds)
+        total_seconds = float(timestamp)
+    
+    # Return a timedelta object
+    return datetime.timedelta(seconds=total_seconds)
+
 # Format a timedelta into hh:mm:ss.ms
 def format_timedelta(ts : datetime.timedelta):
     hours, rm_hr = divmod(ts.total_seconds(), 3600)
@@ -217,14 +239,14 @@ def get_video_duration(input_filename : str, start_time = 0.0):
     duration_seconds = float(result.stdout)
     return datetime.timedelta(seconds=duration_seconds - start_time)
 
-def render_segments(ts_list : list, scale_method : ScalingMethod, crf : int, audio_rate : int, adjust_pre_ms = 100, adjust_post_ms = 300):
-    video_segments = []
+def render_segments(ts_list : list, scale_method : ScalingMethod, crf : int, audio_rate : int, start_adjustment_ms = 100, end_adjustment_ms = 300):
+    adjusted_ts_list = []
     
-    for i, (input_filename, timestamps) in enumerate(ts_list):
+    for input_filename, timestamps in ts_list:
         adjusted_timestamps = [ [t[0], t[1]] for t in timestamps]
-        if adjust_pre_ms > 0 or adjust_post_ms > 0: # Add time to the timestamps
-            pre_sec = adjust_pre_ms / 1000.0 # Amount of time to adjust the start timestamp back
-            post_sec = adjust_post_ms / 1000.0 # Amount of time to adjust the end timestamp forward
+        if start_adjustment_ms > 0 or end_adjustment_ms > 0: # Add time to the timestamps
+            pre_sec = start_adjustment_ms / 1000.0 # Amount of time to adjust the start timestamp back
+            post_sec = end_adjustment_ms / 1000.0 # Amount of time to adjust the end timestamp forward
             end = get_video_duration(input_filename).total_seconds()  # Cap at the duration limit
             for idx,(start_ts, end_ts) in enumerate(timestamps):
                 prev_end = 0.0 if idx < 1 else timestamps[idx-1][1]
@@ -244,13 +266,14 @@ def render_segments(ts_list : list, scale_method : ScalingMethod, crf : int, aud
             else:
                 # No overlap, just add the current timestamp
                 merged.append((current_start, current_end))
-        video_segments.append(merged)
-    processed_videos = resize_inputs(ts_list, scale_method)
+        adjusted_ts_list.append((input_filename, merged))
+    processed_videos = resize_inputs(adjusted_ts_list, scale_method)
+    
     filter_graph = build_filter_graph(processed_videos)
     input_filenames = [input_filename for input_filename,_ in ts_list] # Extract just the list of filenames
     return segment_video(input_filenames, filter_graph, crf, audio_rate)
 
-def search_transcript(transcript, pattern : str, match_mode = MatchMode.word):
+def search_transcript(transcript, pattern : str, match_mode = MatchMode.word, start : datetime.timedelta = None, end : datetime.timedelta = None):
     """
     Finds the match pattern in the transcript. Returns a list of datetime.timedeltas in the form of (start, end).
     """
@@ -260,16 +283,24 @@ def search_transcript(transcript, pattern : str, match_mode = MatchMode.word):
         print('Search pattern not found in transcript.')
     else:
         for segment in transcript['segments']:
-            if re.search(pattern, segment['text'], re.IGNORECASE):
-                if match_mode == MatchMode.segment: # Retrieve timestamps of whole segment
-                    timestamps.append((float(segment['start']), float(segment['end'])))
-                elif match_mode == MatchMode.word:
-                    for word in segment['words']: # Retrieve timestamps of each matching word
-                        if re.search(pattern, word['text'], re.IGNORECASE):
-                            timestamps.append((float(word['start']), float(word['end'])))
-                            found = True
-                    if not found: # Fallback to full segment if nothing was found at the word level
-                        timestamps.append((float(segment['start']), float(segment['end'])))
+            segment_start = float(segment['start'])
+            segment_end = float(segment['end'])
+            # Only add timestamps if they're in the specified time range
+            if (start is None or segment_start >= start.total_seconds()) and (end is None or segment_end <= end.total_seconds()):
+                if re.search(pattern, segment['text'], re.IGNORECASE):
+                    if match_mode == MatchMode.segment: # Retrieve timestamps of whole segment
+                        timestamps.append((segment_start, segment_end))
+                    elif match_mode == MatchMode.word:
+                        for word in segment['words']: # Retrieve timestamps of each matching word
+                            # Only add timestamps if they're in the specified time range
+                            word_start = float(word['start'])
+                            word_end = float(word['end'])
+                            if (start is None or word_start >= start.total_seconds()) and (end is None or word_end <= end.total_seconds()):
+                                if re.search(pattern, word['text'], re.IGNORECASE):
+                                    timestamps.append((word_start, word_end))
+                                    found = True
+                        if not found: # Fallback to full segment if nothing was found at the word level
+                            timestamps.append((segment_start, segment_end))
     return timestamps
 
 # Return a list of filenames along with the transcripts
@@ -292,6 +323,10 @@ if __name__ == '__main__':
         parser = argparse.ArgumentParser(
             prog='Supercutter',
             description='Makes supercuts.')
+        parser.add_argument('-s', '--start', type=str, help='Universal start timestamp. Omit all matches before this time.')
+        parser.add_argument('-e', '--end', type=str, help='Universal end timestamp. Omit all matches after this time.')
+        parser.add_argument('--adjust_start', type=int, default=100, help='The amount of time, in milliseconds, to subtract from the start of each timestamp.')
+        parser.add_argument('--adjust_end', type=int, default=300, help='The amount of time, in milliseconds, to add to the end of each timestamp.')
         parser.add_argument('--audio_rate', type=int, default=320, choices=[48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512], help='Target audio bitrate, in kbps.')
         parser.add_argument('--condition_on_previous', action='store_true', help='Whether to provide the previous output as a prompt for the next window.')
         parser.add_argument('--crf', type=int, help='Use CRF encoding with the specified value instead of lossless encoding.')
@@ -306,6 +341,7 @@ if __name__ == '__main__':
         parser.add_argument('--no_naive', action='store_false', help='Do not use naive approach')
         parser.add_argument('--prompt', type=str, help='Initial prompt to use for transcription.')
         parser.add_argument('--scale_method', type=ScalingMethod, choices=list(ScalingMethod), default = 'min', help='Strategy for scaling videos with different resolution.')
+
         args, unknown_args = parser.parse_known_args()
         if help in args:
             parser.print_help()
@@ -331,6 +367,9 @@ if __name__ == '__main__':
             input_videos = sorted([file for file in input_files if mimetypes.guess_type(file)[0].split('/')[0] == 'video'])
         
         # Load transcripts if possible
+        start = parsetime(args.start) if args.start is not None else None
+        end = parsetime(args.end) if args.end is not None else None
+        print(f'{start}-{end}')
         video_transcript_pairs = load_transcripts(input_videos)
         missing_transcript = any(transcript is None for _, transcript in video_transcript_pairs)
         if missing_transcript: # Only transcribe if there are missing transcripts
@@ -368,12 +407,17 @@ if __name__ == '__main__':
             timestamps = []
             for video, transcript in loaded_transcripts:
                 print(f'Searching transcript of "{video}"')
-                ts = search_transcript(transcript, args.find, args.match_mode)
+                ts = search_transcript(transcript, args.find, args.match_mode, start, end)
                 if len(ts) > 0: # Only append the file if matches were found
                     print('Count: {}'.format(len(ts)))
                     timestamps.append((video, ts))
             if len(timestamps) > 0:
-                output_filename = render_segments(timestamps, args.scale_method, args.crf, args.audio_rate)
+                output_filename = render_segments(timestamps,
+                                                  args.scale_method,
+                                                  args.crf,
+                                                  args.audio_rate,
+                                                  start_adjustment_ms=args.adjust_start,
+                                                  end_adjustment_ms=args.adjust_end)
                 print(f'Rendered file: {output_filename}')
     except argparse.ArgumentError as e:
         print(e)
