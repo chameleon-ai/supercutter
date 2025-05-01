@@ -157,8 +157,8 @@ def resize_inputs(ts_list : list, scale_method : ScalingMethod):
                     scale = None # This signifies that no filter should be applied
                 processed_videos.append((index, ts, scale)) # Just resize to the target resolution without worrying about
             else: # Video's aspect ratio differs from target
-                scale = f'scale=w=iw*min({target_width}/iw\,{target_height}/ih):h=ih*min({target_width}/iw\,{target_height}/ih)'
-                pad = f'pad={target_width}:{target_height}:({target_width}-iw*min({target_width}/iw\,{target_height}/ih))/2:({target_height}-ih*min({target_width}/iw\,{target_height}/ih))/2:black'
+                scale = f'scale=w=iw*min({target_width}/iw\\,{target_height}/ih):h=ih*min({target_width}/iw\\,{target_height}/ih)'
+                pad = f'pad={target_width}:{target_height}:({target_width}-iw*min({target_width}/iw\\\,{target_height}/ih))/2:({target_height}-ih*min({target_width}/iw\\\,{target_height}/ih))/2:black'
                 sar = 'setsar=1'
                 processed_videos.append((index, ts, f'{scale},{pad},{sar}')) # Just resize to the target resolution without worrying about
 
