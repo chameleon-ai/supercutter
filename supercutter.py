@@ -8,8 +8,6 @@ import os
 import re
 import subprocess
 import traceback
-from math import gcd
-from functools import reduce
 
 class MatchMode(Enum):
     segment = 'segment' # Get the timestamp range of the full segment
@@ -196,6 +194,9 @@ def segment_video(input_filenames : list, filter_graph : str, crf : int, audio_r
         ffmpeg_args.extend(['-i', input_filename])
     # Build the filter arguments
     ffmpeg_args.extend(['-filter_complex', filter_graph, '-map', '[outv]', '-map', '[outa]'])
+
+    # Extra arguments to be inserted between filter and codec
+    ffmpeg_args.extend(['-async', '1', '-fps_mode', 'vfr'])
 
     # Encoder. This is used to generate a temporary file.
     ffmpeg_args.extend(["-c:v", "libx264"])
