@@ -192,11 +192,13 @@ def segment_video(input_filenames : list, filter_graph : str, crf : int, audio_r
     for input_filename in input_filenames:
         # Input file(s) to process
         ffmpeg_args.extend(['-i', input_filename])
+    
+     # Extra arguments.
+     # Not sure what +genpts does but it's mentioned here https://video.stackexchange.com/questions/15419/ffmpeg-why-does-the-concat-filter-cause-loss-of-a-v-sync-lipsync
+    ffmpeg_args.extend(['-fflags', '+genpts', '-async', '1', '-fps_mode', 'vfr'])
+
     # Build the filter arguments
     ffmpeg_args.extend(['-filter_complex', filter_graph, '-map', '[outv]', '-map', '[outa]'])
-
-    # Extra arguments to be inserted between filter and codec
-    ffmpeg_args.extend(['-async', '1', '-fps_mode', 'vfr'])
 
     # Encoder. This is used to generate a temporary file.
     ffmpeg_args.extend(["-c:v", "libx264"])
@@ -292,6 +294,7 @@ def search_transcript(transcript, pattern : str, match_mode = MatchMode.word, st
                     if match_mode == MatchMode.segment: # Retrieve timestamps of whole segment
                         timestamps.append((segment_start, segment_end))
                     elif match_mode == MatchMode.word:
+                        found = False
                         for word in segment['words']: # Retrieve timestamps of each matching word
                             # Only add timestamps if they're in the specified time range
                             word_start = float(word['start'])
