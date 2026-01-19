@@ -6,6 +6,7 @@ import math
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import traceback
 
@@ -150,7 +151,7 @@ def resize_inputs(ts_list : list, scale_method : ScalingMethod):
             if original_aspect_ratio == target_aspect_ratio:
                 # Only set scale if we need to resize
                 if target_width != original_width and target_height != original_height:
-                    scale = f'scale={target_width}:-1' if target_width >= target_height else f'scale=-1:target_height'
+                    scale = f'scale={target_width}:-1' if target_width >= target_height else f'scale=-1:{target_height}'
                 else:
                     scale = None # This signifies that no filter should be applied
                 processed_videos.append((index, ts, scale)) # Just resize to the target resolution without worrying about
@@ -271,7 +272,6 @@ def render_segments(ts_list : list, scale_method : ScalingMethod, crf : int, aud
                 merged.append((current_start, current_end))
         adjusted_ts_list.append((input_filename, merged))
     processed_videos = resize_inputs(adjusted_ts_list, scale_method)
-    
     filter_graph = build_filter_graph(processed_videos)
     input_filenames = [input_filename for input_filename,_ in ts_list] # Extract just the list of filenames
     return segment_video(input_filenames, filter_graph, crf, audio_rate)
@@ -343,6 +343,8 @@ if __name__ == '__main__':
         parser.add_argument('--model', type=str, default='large-v3-turbo', help='Whisper model to use.')
         parser.add_argument('--no_vad', action='store_false', help='Do not use Voice Activity Detection')
         parser.add_argument('--no_naive', action='store_false', help='Do not use naive approach')
+        parser.add_argument('--single_video', action='store_true', help='Render everything combined into a single video')
+        parser.add_argument('--skip_duplicates', action='store_true', help='Skip videos where output video name already exists')
         parser.add_argument('--prompt', type=str, help='Initial prompt to use for transcription.')
         parser.add_argument('--scale_method', type=ScalingMethod, choices=list(ScalingMethod), default = 'min', help='Strategy for scaling videos with different resolution.')
 
@@ -365,10 +367,10 @@ if __name__ == '__main__':
         # Take only videos from all listed files and sort
         try:
             import natsort
-            input_videos = natsort.natsorted([file for file in input_files if mimetypes.guess_type(file)[0].split('/')[0] == 'video'])
+            input_videos = natsort.natsorted([file for file in input_files if (mimetypes.guess_type(file)[0] or "none/none").split('/')[0] == 'video'])
         except ImportError: # Fallback to standard library sort
             print('natsort not found. Falling back to standard sort. Try "pip install natsort" if you want files to be naturally sorted.')
-            input_videos = sorted([file for file in input_files if mimetypes.guess_type(file)[0].split('/')[0] == 'video'])
+            input_videos = sorted([file for file in input_files if (mimetypes.guess_type(file)[0] or "none/none").split('/')[0] == 'video'])
         
         # Load transcripts if possible
         start = parsetime(args.start) if args.start is not None else None
@@ -409,20 +411,42 @@ if __name__ == '__main__':
         # Search the transcripts for the specified pattern
         if args.find:
             timestamps = []
+            grand_total = 0
             for video, transcript in loaded_transcripts:
                 print(f'Searching transcript of "{video}"')
                 ts = search_transcript(transcript, args.find, args.match_mode, start, end)
-                if len(ts) > 0: # Only append the file if matches were found
-                    print('Count: {}'.format(len(ts)))
+                num_matches = len(ts)
+                if num_matches > 0: # Only append the file if matches were found
+                    grand_total += num_matches
+                    print(f'Count: {num_matches}')
                     timestamps.append((video, ts))
+            print(f'Total matches: {grand_total}')
             if len(timestamps) > 0:
-                output_filename = render_segments(timestamps,
-                                                  args.scale_method,
-                                                  args.crf,
-                                                  args.audio_rate,
-                                                  start_adjustment_ms=args.adjust_start,
-                                                  end_adjustment_ms=args.adjust_end)
-                print(f'Rendered file: {output_filename}')
+                if args.single_video:
+                    output_filename = render_segments(timestamps,
+                                                      args.scale_method,
+                                                      args.crf,
+                                                      args.audio_rate,
+                                                      start_adjustment_ms=args.adjust_start,
+                                                      end_adjustment_ms=args.adjust_end)
+                    print(f'Rendered file: {output_filename}')
+                else:
+                    for index,ts in enumerate(timestamps):
+                        in_fname = os.path.splitext(os.path.basename(ts[0]))[0]
+                        renamed_file = f'{in_fname}.mkv'
+                        if args.skip_duplicates and os.path.exists(renamed_file):
+                            # Do not process this video if the filename has been found
+                            print(f'Skipping file {renamed_file}')
+                            continue
+                        output_filename = render_segments([ts],
+                                        args.scale_method,
+                                        args.crf,
+                                        args.audio_rate,
+                                        start_adjustment_ms=args.adjust_start,
+                                        end_adjustment_ms=args.adjust_end)
+                        shutil.move(output_filename, get_unique_filename(renamed_file))
+                        print(f'Rendered file: {output_filename}')
+                    
     except argparse.ArgumentError as e:
         print(e)
     except Exception:
